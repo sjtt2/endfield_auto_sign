@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-File: auto_sign.py
+File: auto_sign.py(终末地签到)
+Author: sjtt2
+cron: 0 30 8 * * *
+new Env('终末地签到');
+Update: 2026/2/12
 """
 import hashlib
 import hmac
