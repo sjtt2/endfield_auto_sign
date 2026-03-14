@@ -11,10 +11,32 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import time
 from urllib import parse
 import requests
 import notify
+
+
+# ========== 防封号配置 ==========
+# 请求间隔范围（秒）：随机等待以模拟人类行为
+REQUEST_DELAY_MIN = 2
+REQUEST_DELAY_MAX = 8
+# 账号之间的额外等待时间
+ACCOUNT_DELAY_MIN = 15
+ACCOUNT_DELAY_MAX = 45
+# 签到请求前的等待时间
+SIGN_DELAY_MIN = 3
+SIGN_DELAY_MAX = 10
+
+# User-Agent 池（模拟不同设备）
+USER_AGENTS = [
+    'Skland/1.0.0 (com.skland.grass; Android; SDK_INT 33; Build/TQ3A.230901.001)',
+    'Skland/1.0.0 (com.skland.grass; Android; SDK_INT 34; Build/UP1A.231005.004)',
+    'Skland/1.0.0 (com.skland.grass; Android; SDK_INT 35; Build/AP2A.240405.002)',
+    'Skland/1.0.1 (skport; Android; SDK_INT 33; Build/TQ3A.230901.001)',
+    'Skland/1.0.1 (skport; Android; SDK_INT 34; Build/UP1A.231005.004)',
+]
 
 
 
@@ -49,13 +71,29 @@ SERVER_CONFIG = {
     }
 }
 
-# 请求头配置（简化，保留核心）
+# 请求头配置（优化，防封号）
 BASE_HEADER = {
     'cred': '',
-    'User-Agent': 'Skland/1.0.0 (skport; Android; ) Okhttp/4.11.0',
+    'User-Agent': random.choice(USER_AGENTS),
     'Accept-Encoding': 'gzip',
-    'Connection': 'close'
+    'Connection': 'keep-alive',
+    'Accept': '*/*',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 }
+
+
+def get_random_header():
+    """获取随机化的请求头"""
+    return {
+        **BASE_HEADER,
+        'User-Agent': random.choice(USER_AGENTS)
+    }
+
+
+def random_delay(min_sec=REQUEST_DELAY_MIN, max_sec=REQUEST_DELAY_MAX):
+    """随机延迟，模拟人类操作"""
+    delay = random.uniform(min_sec, max_sec)
+    time.sleep(delay)
 
 def send_notify(title, content):
     """
@@ -88,6 +126,7 @@ def generate_sign(token, path, body):
 
 def get_grant_code(token,cfg):
     """通过token获取grant code"""
+    random_delay(1, 3)  # 请求前随机延迟
     try:
         t = json.loads(token)
         token = t['data']['content']
@@ -96,8 +135,8 @@ def get_grant_code(token,cfg):
     resp = requests.post(
         cfg["GRANT_URL"],
         json={'appCode': cfg["APP_CODE"], 'token': token, 'type': 0},
-        headers=BASE_HEADER,
-        timeout=10
+        headers=get_random_header(),
+        timeout=15
     ).json()
     if resp.get('status') != 0:
         raise Exception(f'获取grant code失败：{resp.get("msg", resp.get("message"))}')
@@ -106,12 +145,12 @@ def get_grant_code(token,cfg):
 def get_cred(grant_code,cfg):
     """通过grant code获取cred和sign token"""
     global sign_token
-
+    random_delay(1, 3)
     resp = requests.post(
         cfg["CRED_URL"],
         json={'code': grant_code, 'kind': 1},
-        headers=BASE_HEADER,
-        timeout=10
+        headers=get_random_header(),
+        timeout=15
     ).json()
     if resp['code'] != 0:
         raise Exception(f'获取cred失败：{resp["message"]}')
@@ -127,6 +166,7 @@ def login(token,cfg):
 
 def get_endfield_roles(cred,cfg):
     """获取终末地绑定角色"""
+    random_delay(2, 5)
     # 生成签名头
     parse_url = parse.urlparse(cfg["BIND_URL"])
     sign, sign_header = generate_sign(sign_token, parse_url.path, '')
@@ -139,7 +179,7 @@ def get_endfield_roles(cred,cfg):
         'sign': sign,
         'Content-Type': 'application/json'
     }
-    resp = requests.get(cfg["BIND_URL"], headers=header, timeout=10).json()
+    resp = requests.get(cfg["BIND_URL"], headers=header, timeout=15).json()
     if resp['code'] != 0:
         raise Exception(f'获取角色失败：{resp["message"]}')
     binding = None
@@ -158,6 +198,8 @@ def do_daily_sign(cred,cfg):
         roles = get_endfield_roles(cred,cfg)
         role = roles.get('defaultRole') or (roles.get('roles') and roles['roles'][0])
         role_str = f"3_{role['roleId']}_{role['serverId']}"
+        # 签到前随机延迟，模拟人类行为
+        random_delay(SIGN_DELAY_MIN, SIGN_DELAY_MAX)
         # 生成签到签名
         parse_url = parse.urlparse(cfg["SIGN_URL"])
         sign, sign_header = generate_sign(sign_token, parse_url.path, '')
@@ -173,7 +215,7 @@ def do_daily_sign(cred,cfg):
             'Content-Type': 'application/json'
         }
         # 发送签到请求（body为空）
-        resp = requests.post(cfg["SIGN_URL"], headers=header, json=None, timeout=10).json()
+        resp = requests.post(cfg["SIGN_URL"], headers=header, json=None, timeout=15).json()
         # 结果处理
         role_name = roles.get('defaultRole', {}).get('nickname', '未知角色')
         channel = roles.get('defaultRole', {}).get('serverName', '未知服务器')
@@ -235,8 +277,11 @@ def main():
                 run_message += err_msg + '\n'
                 print(err_msg)
                 account_num += 1
+            # 账号之间增加随机延迟，避免高频请求被检测
             if idx < len(tokens):
-                time.sleep(10)
+                account_delay = random.uniform(ACCOUNT_DELAY_MIN, ACCOUNT_DELAY_MAX)
+                print(f"等待 {account_delay:.1f} 秒后处理下一个账号...")
+                time.sleep(account_delay)
     if run_message:
         send_notify('终末地签到结果', run_message)
     print(f"\n脚本执行结束 - {time.strftime('%Y-%m-%d %H:%M:%S')}")
